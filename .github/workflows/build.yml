@@ -1,0 +1,401 @@
+name: Build Plugin
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Create project files automatically
+      run: |
+        mkdir -p src/main/resources
+        mkdir -p src/main/java/com/hologram/plugin
+
+        cat << 'EOF' > pom.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.hologram.plugin</groupId>
+    <artifactId>HologramPlugin</artifactId>
+    <version>1.0.0</version>
+    <properties>
+        <java.version>11</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+    <repositories>
+        <repository>
+            <id>spigot-repo</id>
+            <url>https://hub.spigotmc.org/nexus/content/repositories/snapshots/</url>
+        </repository>
+    </repositories>
+    <dependencies>
+        <dependency>
+            <groupId>org.spigotmc</groupId>
+            <artifactId>spigot-api</artifactId>
+            <version>1.16.5-R0.1-SNAPSHOT</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.8.1</version>
+                <configuration>
+                    <source>11</source>
+                    <target>11</target>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+EOF
+
+        cat << 'EOF' > src/main/resources/plugin.yml
+name: HologramPlugin
+version: 1.0.0
+main: com.hologram.plugin.HologramPlugin
+api-version: 1.16
+commands:
+  hologram:
+    description: Hologram Command
+    aliases: [holo]
+    permission: hologram.admin
+permissions:
+  hologram.admin:
+    default: op
+EOF
+
+        cat << 'EOF' > src/main/java/com/hologram/plugin/HologramPlugin.java
+package com.hologram.plugin;
+
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.Location;
+import org.bukkit.World;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandExecutor;
+import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabCompleter;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.entity.ArmorStand;
+import org.bukkit.entity.EntityType;
+import org.bukkit.entity.Player;
+import org.bukkit.plugin.java.JavaPlugin;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class HologramPlugin extends JavaPlugin {
+
+    private static HologramPlugin instance;
+    private HologramManager hologramManager;
+
+    @Override
+    public void onEnable() {
+        instance = this;
+        hologramManager = new HologramManager(this);
+        hologramManager.loadHolograms();
+
+        HologramCommand cmd = new HologramCommand(this, hologramManager);
+        getCommand("hologram").setExecutor(cmd);
+        getCommand("hologram").setTabCompleter(cmd);
+
+        getLogger().info("HologramPlugin 1.16.5 successfully loaded!");
+    }
+
+    @Override
+    public void onDisable() {
+        if (hologramManager != null) {
+            hologramManager.saveHolograms();
+            hologramManager.removeAllEntities();
+        }
+    }
+
+    public static HologramPlugin getInstance() { return instance; }
+
+    public static class Hologram {
+        private final String id;
+        private Location location;
+        private List<String> lines = new ArrayList<>();
+        private final List<ArmorStand> armorStands = new ArrayList<>();
+        private double lineSpacing = 0.25;
+        private boolean visible = true;
+
+        public Hologram(String id, Location location) {
+            this.id = id;
+            this.location = location.clone();
+        }
+
+        public void spawn() {
+            removeEntities();
+            if (!visible || location.getWorld() == null) return;
+
+            for (int i = 0; i < lines.size(); i++) {
+                Location lineLoc = location.clone().add(0, -i * lineSpacing, 0);
+                ArmorStand stand = (ArmorStand) lineLoc.getWorld().spawnEntity(lineLoc, EntityType.ARMOR_STAND);
+                stand.setVisible(false);
+                stand.setGravity(false);
+                stand.setCustomNameVisible(true);
+                stand.setCustomName(ColorUtils.colorize(lines.get(i)));
+                stand.setSmall(true);
+                stand.setMarker(true);
+                stand.setInvulnerable(true);
+                stand.setBasePlate(false);
+                stand.setArms(false);
+                armorStands.add(stand);
+            }
+        }
+
+        public void removeEntities() {
+            for (ArmorStand stand : armorStands) {
+                if (stand != null && !stand.isDead()) stand.remove();
+            }
+            armorStands.clear();
+        }
+
+        public void addLine(String text) { lines.add(text); respawn(); }
+        public boolean removeLine(int index) {
+            if (index < 0 || index >= lines.size()) return false;
+            lines.remove(index);
+            respawn();
+            return true;
+        }
+        public boolean setLine(int index, String text) {
+            if (index < 0 || index >= lines.size()) return false;
+            lines.set(index, text);
+            respawn();
+            return true;
+        }
+        public void teleport(Location loc) { this.location = loc.clone(); respawn(); }
+        public void respawn() { removeEntities(); spawn(); }
+
+        public String getId() { return id; }
+        public Location getLocation() { return location; }
+        public List<String> getLines() { return lines; }
+        public void setLines(List<String> lines) { this.lines = lines; }
+        public int getLineCount() { return lines.size(); }
+    }
+
+    public static class HologramManager {
+        private final HologramPlugin plugin;
+        private final Map<String, Hologram> holograms = new LinkedHashMap<>();
+        private final File dataFile;
+
+        public HologramManager(HologramPlugin plugin) {
+            this.plugin = plugin;
+            this.dataFile = new File(plugin.getDataFolder(), "holograms.yml");
+        }
+
+        public Hologram createHologram(String id, Location loc, String text) {
+            if (holograms.containsKey(id.toLowerCase())) return null;
+            Hologram holo = new Hologram(id.toLowerCase(), loc);
+            holo.addLine(text);
+            holograms.put(id.toLowerCase(), holo);
+            saveHolograms();
+            return holo;
+        }
+
+        public boolean deleteHologram(String id) {
+            Hologram holo = holograms.remove(id.toLowerCase());
+            if (holo != null) {
+                holo.removeEntities();
+                saveHolograms();
+                return true;
+            }
+            return false;
+        }
+
+        public Hologram getHologram(String id) { return holograms.get(id.toLowerCase()); }
+        public Map<String, Hologram> getHolograms() { return holograms; }
+
+        public void removeAllEntities() {
+            for (Hologram h : holograms.values()) h.removeEntities();
+        }
+
+        public void saveHolograms() {
+            FileConfiguration cfg = new YamlConfiguration();
+            for (Map.Entry<String, Hologram> entry : holograms.entrySet()) {
+                String path = "holograms." + entry.getKey();
+                Location loc = entry.getValue().getLocation();
+                cfg.set(path + ".world", loc.getWorld().getName());
+                cfg.set(path + ".x", loc.getX());
+                cfg.set(path + ".y", loc.getY());
+                cfg.set(path + ".z", loc.getZ());
+                cfg.set(path + ".lines", entry.getValue().getLines());
+            }
+            try { cfg.save(dataFile); } catch (IOException ignored) {}
+        }
+
+        public void loadHolograms() {
+            if (!dataFile.exists()) return;
+            FileConfiguration cfg = YamlConfiguration.loadConfiguration(dataFile);
+            ConfigurationSection sec = cfg.getConfigurationSection("holograms");
+            if (sec == null) return;
+
+            for (String id : sec.getKeys(false)) {
+                String path = "holograms." + id;
+                World w = Bukkit.getWorld(cfg.getString(path + ".world"));
+                if (w == null) continue;
+                Location loc = new Location(w, cfg.getDouble(path + ".x"), cfg.getDouble(path + ".y"), cfg.getDouble(path + ".z"));
+                Hologram holo = new Hologram(id, loc);
+                holo.setLines(cfg.getStringList(path + ".lines"));
+                holograms.put(id, holo);
+                Bukkit.getScheduler().runTaskLater(plugin, holo::spawn, 20L);
+            }
+        }
+    }
+
+    public static class ColorUtils {
+        private static final Pattern HEX_PATTERN = Pattern.compile("&#([A-Fa-f0-9]{6})");
+
+        public static String colorize(String text) {
+            if (text == null) return "";
+            Matcher matcher = HEX_PATTERN.matcher(text);
+            StringBuffer buffer = new StringBuffer();
+            while (matcher.find()) {
+                String hex = matcher.group(1);
+                StringBuilder repl = new StringBuilder("§x");
+                for (char c : hex.toCharArray()) repl.append("§").append(c);
+                matcher.appendReplacement(buffer, repl.toString());
+            }
+            matcher.appendTail(buffer);
+            return ChatColor.translateAlternateColorCodes('&', buffer.toString());
+        }
+
+        public static String stripColor(String text) {
+            return ChatColor.stripColor(colorize(text));
+        }
+
+        public static String createRainbow(String text) {
+            String[] rainbow = {"FF0000", "FF7F00", "FFFF00", "00FF00", "0000FF", "4B0082", "8B00FF"};
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c == ' ') { sb.append(' '); continue; }
+                sb.append("&#").append(rainbow[i % rainbow.length]).append(c);
+            }
+            return sb.toString();
+        }
+    }
+
+    public static class HologramCommand implements CommandExecutor, TabCompleter {
+        private final HologramPlugin plugin;
+        private final HologramManager manager;
+
+        public HologramCommand(HologramPlugin plugin, HologramManager manager) {
+            this.plugin = plugin;
+            this.manager = manager;
+        }
+
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (!(sender instanceof Player)) return true;
+            Player p = (Player) sender;
+
+            if (args.length == 0) {
+                p.sendMessage(ColorUtils.colorize("&b&lHologram Commands:"));
+                p.sendMessage(ColorUtils.colorize("&e/holo create <id> <text> &7- Create holo"));
+                p.sendMessage(ColorUtils.colorize("&e/holo delete <id> &7- Delete holo"));
+                p.sendMessage(ColorUtils.colorize("&e/holo addline <id> <text> &7- Add line"));
+                p.sendMessage(ColorUtils.colorize("&e/holo removeline <id> <num> &7- Remove line"));
+                p.sendMessage(ColorUtils.colorize("&e/holo style <id> <bold/italic/magic> &7- Font style"));
+                p.sendMessage(ColorUtils.colorize("&e/holo rainbow <id> &7- Rainbow text"));
+                return true;
+            }
+
+            String sub = args[0].toLowerCase();
+            if (sub.equals("create") && args.length >= 3) {
+                Location loc = p.getLocation().add(0, 2.0, 0);
+                String text = String.join(" ", Arrays.copyOfRange(args, 2, args.length));
+                if (manager.createHologram(args[1], loc, text) != null) {
+                    p.sendMessage(ColorUtils.colorize("&aHologram created!"));
+                } else {
+                    p.sendMessage(ColorUtils.colorize("&cAlready exists!"));
+                }
+            } else if (sub.equals("delete") && args.length >= 2) {
+                if (manager.deleteHologram(args[1])) {
+                    p.sendMessage(ColorUtils.colorize("&aDeleted!"));
+                } else {
+                    p.sendMessage(ColorUtils.colorize("&cNot found!"));
+                }
+            } else if (sub.equals("addline") && args.length >= 3) {
+                Hologram h = manager.getHologram(args[1]);
+                if (h != null) {
+                    h.addLine(String.join(" ", Arrays.copyOfRange(args, 2, args.length)));
+                    manager.saveHolograms();
+                    p.sendMessage(ColorUtils.colorize("&aLine added!"));
+                }
+            } else if (sub.equals("removeline") && args.length >= 3) {
+                Hologram h = manager.getHologram(args[1]);
+                if (h != null) {
+                    try {
+                        h.removeLine(Integer.parseInt(args[2]) - 1);
+                        manager.saveHolograms();
+                        p.sendMessage(ColorUtils.colorize("&aLine removed!"));
+                    } catch (Exception e) { p.sendMessage(ColorUtils.colorize("&cInvalid line!")); }
+                }
+            } else if (sub.equals("rainbow") && args.length >= 2) {
+                Hologram h = manager.getHologram(args[1]);
+                if (h != null) {
+                    List<String> lines = h.getLines();
+                    for (int i = 0; i < lines.size(); i++) {
+                        lines.set(i, ColorUtils.createRainbow(ColorUtils.stripColor(lines.get(i))));
+                    }
+                    h.setLines(lines);
+                    h.respawn();
+                    manager.saveHolograms();
+                    p.sendMessage(ColorUtils.colorize("&aRainbow applied!"));
+                }
+            } else if (sub.equals("style") && args.length >= 3) {
+                Hologram h = manager.getHologram(args[1]);
+                if (h != null) {
+                    String prefix = "&r";
+                    if (args[2].equalsIgnoreCase("bold")) prefix = "&l";
+                    if (args[2].equalsIgnoreCase("italic")) prefix = "&o";
+                    if (args[2].equalsIgnoreCase("magic")) prefix = "&k";
+
+                    List<String> lines = h.getLines();
+                    for (int i = 0; i < lines.size(); i++) {
+                        lines.set(i, prefix + ColorUtils.stripColor(lines.get(i)));
+                    }
+                    h.setLines(lines);
+                    h.respawn();
+                    manager.saveHolograms();
+                    p.sendMessage(ColorUtils.colorize("&aStyle applied!"));
+                }
+            }
+            return true;
+        }
+
+        @Override
+        public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+            if (args.length == 1) return Arrays.asList("create", "delete", "addline", "removeline", "style", "rainbow");
+            if (args.length == 2 && !args[0].equalsIgnoreCase("create")) return new ArrayList<>(manager.getHolograms().keySet());
+            if (args.length == 3 && args[0].equalsIgnoreCase("style")) return Arrays.asList("bold", "italic", "magic");
+            return Collections.emptyList();
+        }
+    }
+}
+EOF
+
+    - name: Set up JDK 11
+      uses: actions/setup-java@v3
+      with:
+        java-version: '11'
+        distribution: 'temurin'
+        cache: maven
+
+    - name: Build Plugin
+      run: mvn clean package --batch-mode
+
+    - name: Upload Plugin JAR
+      uses: actions/upload-artifact@v4
+      with:
+        name: HologramPlugin-1.16.5
+        path: target/*.jar
