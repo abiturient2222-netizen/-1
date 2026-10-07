@@ -1,0 +1,93 @@
+name: Build
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Create Files
+        run: |
+          mkdir -p src/main/resources
+          mkdir -p src/main/java/com/hologram/plugin
+          
+          echo "<?xml version='1.0' encoding='UTF-8'?>
+          <project xmlns='http://maven.apache.org/POM/4.0.0' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' xsi:schemaLocation='http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd'>
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.hologram.plugin</groupId>
+              <artifactId>HologramPlugin</artifactId>
+              <version>1.0.0</version>
+              <properties>
+                  <maven.compiler.source>1.8</maven.compiler.source>
+                  <maven.compiler.target>1.8</maven.compiler.target>
+              </properties>
+              <repositories>
+                  <repository>
+                      <id>spigot-repo</id>
+                      <url>https://hub.spigotmc.org/nexus/content/repositories/snapshots/</url>
+                  </repository>
+              </repositories>
+              <dependencies>
+                  <dependency>
+                      <groupId>org.spigotmc</groupId>
+                      <artifactId>spigot-api</artifactId>
+                      <version>1.16.5-R0.1-SNAPSHOT</version>
+                      <scope>provided</scope>
+                  </dependency>
+              </dependencies>
+          </project>" > pom.xml
+
+          echo "name: HologramPlugin
+          version: 1.0.0
+          main: com.hologram.plugin.HologramPlugin
+          api-version: 1.16
+          commands:
+            hologram:
+              aliases: [holo]
+              permission: hologram.admin" > src/main/resources/plugin.yml
+
+          echo "package com.hologram.plugin;
+          import org.bukkit.*;
+          import org.bukkit.command.*;
+          import org.bukkit.entity.*;
+          import org.bukkit.plugin.java.JavaPlugin;
+          import java.util.*;
+          public class HologramPlugin extends JavaPlugin implements CommandExecutor {
+              @Override
+              public void onEnable() {
+                  getCommand('hologram').setExecutor(this);
+              }
+              @Override
+              public boolean onCommand(CommandSender s, Command c, String l, String[] a) {
+                  if (!(s instanceof Player)) return true;
+                  Player p = (Player) s;
+                  if (a.length > 1 && a[0].equalsIgnoreCase('create')) {
+                      ArmorStand as = (ArmorStand) p.getWorld().spawnEntity(p.getLocation().add(0, 2, 0), EntityType.ARMOR_STAND);
+                      as.setVisible(false);
+                      as.setGravity(false);
+                      as.setCustomNameVisible(true);
+                      as.setCustomName(ChatColor.translateAlternateColorCodes('&', String.join(' ', Arrays.copyOfRange(a, 2, a.length))));
+                      as.setMarker(true);
+                      p.sendMessage('Hologram Created!');
+                  }
+                  return true;
+              }
+          }" > src/main/java/com/hologram/plugin/HologramPlugin.java
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build
+        run: mvn clean package --batch-mode
+
+      - name: Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HologramPlugin
+          path: target/*.jar
