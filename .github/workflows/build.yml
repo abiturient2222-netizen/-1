@@ -1,0 +1,120 @@
+name: BuildPlugin
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare Files
+        run: |
+          mkdir -p src/main/resources
+          mkdir -p src/main/java/com/hologram/plugin
+          
+          cat << 'EOF' > pom.xml
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.hologram.plugin</groupId>
+              <artifactId>HologramPlugin</artifactId>
+              <version>1.0</version>
+              <properties>
+                  <maven.compiler.source>1.8</maven.compiler.source>
+                  <maven.compiler.target>1.8</maven.compiler.target>
+                  <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+              </properties>
+              <repositories>
+                  <repository>
+                      <id>spigotmc-repo</id>
+                      <url>https://hub.spigotmc.org/nexus/content/repositories/snapshots/</url>
+                  </repository>
+              </repositories>
+              <dependencies>
+                  <dependency>
+                      <groupId>org.spigotmc</groupId>
+                      <artifactId>spigot-api</artifactId>
+                      <version>1.16.5-R0.1-SNAPSHOT</version>
+                      <scope>provided</scope>
+                  </dependency>
+              </dependencies>
+          </project>
+          EOF
+
+          cat << 'EOF' > src/main/resources/plugin.yml
+          name: HologramPlugin
+          version: 1.0
+          main: com.hologram.plugin.HologramPlugin
+          api-version: 1.16
+          commands:
+            hologram:
+              aliases: [holo]
+              permission: hologram.admin
+          EOF
+
+          cat << 'EOF' > src/main/java/com/hologram/plugin/HologramPlugin.java
+          package com.hologram.plugin;
+
+          import org.bukkit.Bukkit;
+          import org.bukkit.ChatColor;
+          import org.bukkit.Location;
+          import org.bukkit.command.Command;
+          import org.bukkit.command.CommandExecutor;
+          import org.bukkit.command.CommandSender;
+          import org.bukkit.entity.ArmorStand;
+          import org.bukkit.entity.EntityType;
+          import org.bukkit.entity.Player;
+          import org.bukkit.plugin.java.JavaPlugin;
+          import java.util.Arrays;
+
+          public class HologramPlugin extends JavaPlugin implements CommandExecutor {
+              @Override
+              public void onEnable() {
+                  getCommand("hologram").setExecutor(this);
+                  getLogger().info("Hologram Plugin Enabled!");
+              }
+
+              @Override
+              public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+                  if (!(sender instanceof Player)) return true;
+                  Player player = (Player) sender;
+
+                  if (args.length >= 2 && args[0].equalsIgnoreCase("create")) {
+                      String text = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
+                      Location loc = player.getLocation().add(0, 1.2, 0);
+                      
+                      ArmorStand holo = (ArmorStand) player.getWorld().spawnEntity(loc, EntityType.ARMOR_STAND);
+                      holo.setVisible(false);
+                      holo.setGravity(false);
+                      holo.setCustomNameVisible(true);
+                      holo.setCustomName(ChatColor.translateAlternateColorCodes('&', text));
+                      holo.setMarker(true);
+                      
+                      player.sendMessage(ChatColor.GREEN + "Голограмма создана!");
+                      return true;
+                  }
+                  
+                  player.sendMessage(ChatColor.RED + "Используй: /holo create <текст>");
+                  return true;
+              }
+          }
+          EOF
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn clean package --batch-mode
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HologramPlugin-JAR
+          path: target/*.jar
